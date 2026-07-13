@@ -365,7 +365,7 @@ impl super::TermWindow {
         self.last_ui_item.replace(item.clone());
         match item.item_type {
             UIItemType::TabBar(item) => {
-                self.mouse_event_tab_bar(item, event, context);
+                self.mouse_event_tab_bar(item, event, context, &pane);
             }
             UIItemType::AboveScrollThumb => {
                 self.mouse_event_above_scroll_thumb(item, pane, event, context);
@@ -458,11 +458,20 @@ impl super::TermWindow {
         item: TabBarItem,
         event: MouseEvent,
         context: &dyn WindowOps,
+        pane: &Arc<dyn Pane>,
     ) {
         match event.kind {
             WMEK::Press(MousePress::Left) => match item {
                 TabBarItem::Tab { tab_idx, .. } => {
-                    self.activate_tab(tab_idx as isize).ok();
+                    // Check for double-click to rename tab
+                    if self.last_mouse_click.as_ref().map(|c| c.streak) == Some(2) {
+                        self.perform_key_assignment(
+                            &pane,
+                            &KeyAssignment::SetTabTitle,
+                        ).ok();
+                    } else {
+                        self.activate_tab(tab_idx as isize).ok();
+                    }
                 }
                 TabBarItem::NewTabButton { .. } => {
                     self.do_new_tab_button_click(MousePress::Left);

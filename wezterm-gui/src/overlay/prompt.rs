@@ -1,5 +1,6 @@
 use crate::scripting::guiwin::GuiWin;
 use config::keyassignment::{KeyAssignment, PromptInputLine};
+use mux::tab::TabId;
 use mux::termwiztermtab::TermWizTerminal;
 use mux_lua::MuxPane;
 use std::rc::Rc;
@@ -80,6 +81,33 @@ pub fn show_line_prompt_overlay(
     Ok(())
 }
 
+pub fn show_set_tab_title_overlay(
+    mut term: TermWizTerminal,
+    args: PromptInputLine,
+    window: GuiWin,
+    pane: MuxPane,
+    tab_id: TabId,
+) -> anyhow::Result<()> {
+    term.no_grab_mouse_in_raw_mode();
+    let mut text = args.description.replace("\r\n", "\n").replace("\n", "\r\n");
+    text.push_str("\r\n");
+    term.render(&[Change::Text(text)])?;
+
+    let mut host = PromptHost::new();
+    let mut editor = LineEditor::new(&mut term);
+    editor.set_prompt(&args.prompt);
+    let line =
+        editor.read_line_with_optional_initial_value(&mut host, args.initial_value.as_deref())?;
+
+    promise::spawn::spawn_into_main_thread(async move {
+        trampoline_set_tab_title(window, pane, tab_id, line);
+        anyhow::Result::<()>::Ok(())
+    })
+    .detach();
+
+    Ok(())
+}
+
 fn trampoline(name: String, window: GuiWin, pane: MuxPane, line: Option<String>) {
     promise::spawn::spawn(async move {
         config::with_lua_config_on_main_thread(move |lua| do_event(lua, name, window, pane, line))
@@ -89,6 +117,44 @@ fn trampoline(name: String, window: GuiWin, pane: MuxPane, line: Option<String>)
 }
 
 async fn do_event(
+    lua: Option<Rc<mlua::Lua>>,
+    name: String,
+    window: GuiWin,
+    pane: MuxPane,
+    line: Option<String>,
+) -> anyhow::Result<()> {
+    if let Some(lua) = lua {
+        let args = lua.pack_multi((window, pane, line))?;
+
+        if let Err(err) = config::lua::emit_event(&lua, (name.clone(), args)).await {
+            log::error!("while processing {} event: {:#}", name, err);
+        }
+    }
+
+    Ok(())
+}
+
+fn trampoline_set_tab_title(window: GuiWin, pane: MuxPane, tab_id: TabId, line: Option<String>) {
+    if let Some(new_title) = line {
+        promise::spawn::spawn(async move {
+            let mux = mux::Mux::get();
+            if let Some(tab) = mux.get_tab(tab_id) {
+                tab.set_title(&new_title);
+            }
+            // Also trigger a status update event to notify Lua configs
+            let gui_win = window;
+            let mux_pane = pane;
+            
+            promise::spawn::spawn(config::with_lua_config_on_main_thread(move |lua| {
+                trampoline_do_event(lua, "set-tab-title".to_string(), gui_win, mux_pane, Some(new_title))
+            })).detach();
+            
+            anyhow::Result::<()>::Ok(())
+        }).detach();
+    }
+}
+
+async fn trampoline_do_event(
     lua: Option<Rc<mlua::Lua>>,
     name: String,
     window: GuiWin,

@@ -2324,6 +2324,37 @@ impl TermWindow {
         promise::spawn::spawn(future).detach();
     }
 
+    fn show_set_tab_title(&mut self) {
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => return,
+        };
+
+        let pane = match self.get_active_pane_or_overlay() {
+            Some(pane) => pane,
+            None => return,
+        };
+
+        let initial_value = Some(tab.get_title());
+        let args = PromptInputLine {
+            action: Box::new(KeyAssignment::EmitEvent("set-tab-title".to_string())),
+            initial_value,
+            description: "Enter new tab title (Escape to cancel)".to_string(),
+            prompt: "> ".to_string(),
+        };
+
+        let gui_win = GuiWin::new(self);
+        let pane = MuxPane(pane.pane_id());
+        let tab_id = tab.tab_id();
+
+        let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
+            crate::overlay::prompt::show_set_tab_title_overlay(term, args, gui_win, pane, tab_id)
+        });
+        self.assign_overlay(tab_id, overlay);
+        promise::spawn::spawn(future).detach();
+    }
+
     fn show_confirmation(&mut self, args: &Confirmation) {
         let mux = Mux::get();
         let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
@@ -3162,6 +3193,7 @@ impl TermWindow {
             PromptInputLine(args) => self.show_prompt_input_line(args),
             InputSelector(args) => self.show_input_selector(args),
             Confirmation(args) => self.show_confirmation(args),
+            SetTabTitle => self.show_set_tab_title(),
         };
         Ok(PerformAssignmentResult::Handled)
     }
